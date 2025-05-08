@@ -265,7 +265,8 @@ class Server {
         MethodWebsocketRequestHandler.handleWebsocket,
       );
       return;
-    } else if (uri.path == '/serverpod_cloud_storage') {
+    } else if (uri.path == '/serverpod_cloud_storage' ||
+        request.headers.contentType?.mimeType == ContentType.binary.mimeType) {
       readBody = false;
     }
 
