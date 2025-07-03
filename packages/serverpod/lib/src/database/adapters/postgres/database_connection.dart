@@ -8,6 +8,7 @@ import 'package:serverpod/src/database/concepts/columns.dart';
 import 'package:serverpod/src/database/concepts/exceptions.dart';
 import 'package:serverpod/src/database/concepts/includes.dart';
 import 'package:serverpod/src/database/concepts/order.dart';
+import 'package:serverpod/src/database/concepts/runtime_parameters.dart';
 import 'package:serverpod/src/database/concepts/table_relation.dart';
 import 'package:serverpod/src/database/concepts/transaction.dart';
 import 'package:serverpod/src/database/postgres_error_codes.dart';
@@ -485,7 +486,17 @@ class DatabaseConnection {
       context: _resolveQueryContext(transaction),
     );
 
-    return result.map((row) => row.toColumnMap());
+    return result.map((row) {
+      return {
+        for (final entry in row.toColumnMap().entries)
+          // Serverpod serialization already knows the type of the target
+          // class, so we can remove `UndecodedBytes` here to avoid the
+          // dependency of serverpod_serialization on the `postgres` package.
+          entry.key: entry.value is pg.UndecodedBytes
+              ? (entry.value as pg.UndecodedBytes).bytes
+              : entry.value
+      };
+    });
   }
 
   pg.Session _resolveQueryContext(Transaction? transaction) {
@@ -722,6 +733,10 @@ class DatabaseConnection {
     if (column is ColumnUuid) return 'uuid';
     if (column is ColumnUri) return 'text';
     if (column is ColumnBigInt) return 'text';
+    if (column is ColumnVector) return 'vector';
+    if (column is ColumnHalfVector) return 'halfvec';
+    if (column is ColumnSparseVector) return 'sparsevec';
+    if (column is ColumnBit) return 'bit';
     if (column is ColumnSerializable) return 'json';
     if (column is ColumnEnumExtended) {
       switch (column.serialized) {
@@ -802,6 +817,9 @@ class _PostgresTransaction implements Transaction {
   final pg.TxSession executionContext;
   final Session _session;
 
+  @override
+  final Map<String, dynamic> runtimeParameters = {};
+
   _PostgresTransaction(
     this.executionContext,
     this._session,
@@ -828,6 +846,19 @@ class _PostgresTransaction implements Transaction {
     var savepointId = 'savepoint_$postgresCompatibleRandomString';
     await _query('SAVEPOINT $savepointId;');
     return _PostgresSavepoint(savepointId, this);
+  }
+
+  @override
+  Future<void> setRuntimeParameters(
+    RuntimeParametersListBuilder builder,
+  ) async {
+    final parameters = builder(RuntimeParametersBuilder());
+    for (var group in parameters) {
+      for (var statement in group.buildStatements(isLocal: true)) {
+        await _query(statement);
+      }
+      runtimeParameters.addAll(group.options);
+    }
   }
 }
 

@@ -3,6 +3,7 @@ import 'package:path/path.dart' as p;
 import 'package:recase/recase.dart';
 import 'package:serverpod_cli/analyzer.dart';
 import 'package:serverpod_cli/src/analyzer/dart/definitions.dart';
+import 'package:serverpod_cli/src/analyzer/models/definitions.dart';
 import 'package:serverpod_cli/src/config/config.dart';
 import 'package:serverpod_cli/src/database/create_definition.dart';
 import 'package:serverpod_cli/src/generator/shared.dart';
@@ -44,7 +45,8 @@ class LibraryGenerator {
 
     var unsealedModels = allModels
         .where((model) => !(model is ModelClassDefinition && model.isSealed))
-        .toList();
+        .toList()
+      ..sort(_byChildClassesBeforeParents);
 
     // exports
     library.directives.addAll([
@@ -203,12 +205,18 @@ class LibraryGenerator {
             'String? className = super.getClassNameForObject(data);'
             'if(className != null) return className;',
           ),
-          for (var extraClass in config.extraClasses)
-            Code.scope((a) =>
-                'if(data is ${a(extraClass.reference(serverCode, config: config))}) {return \'${extraClass.className}\';}'),
-          for (var classInfo in unsealedModels)
-            Code.scope((a) =>
-                'if(data is ${a(refer(classInfo.className, TypeDefinition.getRef(classInfo)))}) {return \'${classInfo.className}\';}'),
+          if (unsealedModels.isNotEmpty || config.extraClasses.isNotEmpty) ...[
+            const Code('switch (data) {'),
+            for (var extraClass in config.extraClasses)
+              Code.scope((a) =>
+                  'case ${a(extraClass.reference(serverCode, config: config))}():'
+                  '  return \'${extraClass.className}\';'),
+            for (var classInfo in unsealedModels)
+              Code.scope((a) =>
+                  'case ${a(refer(classInfo.className, TypeDefinition.getRef(classInfo)))}():'
+                  '  return \'${classInfo.className}\';'),
+            const Code('}'),
+          ],
           if (config.name != 'serverpod' && serverCode)
             _buildGetClassNameForObjectDelegation(
                 serverpodProtocolUrl(serverCode), 'serverpod'),
@@ -329,7 +337,7 @@ class LibraryGenerator {
             ..docs.add('''
   /// Wraps serialized data with its class name so that it can be deserialized
   /// with [deserializeByClassName].
-  /// 
+  ///
   /// Records and containers containing records will be return in their JSON representation in the returned map.''')
             ..name = 'wrapWithClassName'
             ..returns = refer('Map<String, dynamic>')
@@ -1104,9 +1112,9 @@ class LibraryGenerator {
         (m) => m
           ..docs.add('''
             /// Maps any `Record`s known to this [Protocol] to their JSON representation
-            /// 
+            ///
             /// Throws in case the record type is not known.
-            /// 
+            ///
             /// This method will return `null` (only) for `null` inputs.''')
           ..name = _mapRecordToJsonFuncName
           ..returns = refer('Map<String, dynamic>?')
@@ -1543,6 +1551,8 @@ extension on DatabaseDefinition {
                   'dartType': literalString(column.dartType!),
                 if (column.columnDefault != null)
                   'columnDefault': literalString(column.columnDefault!),
+                if (column.vectorDimension != null)
+                  'vectorDimension': literalNum(column.vectorDimension!),
               }),
           ]),
           'foreignKeys': literalList([
@@ -1594,6 +1604,16 @@ extension on DatabaseDefinition {
                 'type': literalString(index.type),
                 'isUnique': literalBool(index.isUnique),
                 'isPrimary': literalBool(index.isPrimary),
+                if (index.vectorDistanceFunction != null)
+                  'vectorDistanceFunction': refer(
+                      'VectorDistanceFunction.${index.vectorDistanceFunction!.name}',
+                      serverpodProtocolUrl(serverCode)),
+                if (index.vectorColumnType != null)
+                  'vectorColumnType': refer(
+                      'ColumnType.${index.vectorColumnType!.name}',
+                      serverpodProtocolUrl(serverCode)),
+                if (index.parameters != null)
+                  'parameters': literalMap(index.parameters!),
               }),
           ]),
           'managed': literalBool(table.isManaged),
@@ -1601,4 +1621,34 @@ extension on DatabaseDefinition {
       ...additionalTables,
     ]).code;
   }
+}
+
+/// Sorts child classes before their parents, such that serialization order is stable.
+int _byChildClassesBeforeParents(
+  SerializableModelDefinition a,
+  SerializableModelDefinition b,
+) {
+  if (a is! ModelClassDefinition || b is! ModelClassDefinition) {
+    return 0;
+  }
+
+  if (a.extendsClass != null && b.extendsClass == null) {
+    return -1;
+  }
+
+  if (a.extendsClass == null && b.extendsClass != null) {
+    return 1;
+  }
+
+  if (a.extendsClass is ResolvedInheritanceDefinition &&
+      (a.extendsClass as ResolvedInheritanceDefinition).classDefinition == b) {
+    return -1;
+  }
+
+  if (b.extendsClass is ResolvedInheritanceDefinition &&
+      (b.extendsClass as ResolvedInheritanceDefinition).classDefinition == a) {
+    return 1;
+  }
+
+  return 0;
 }

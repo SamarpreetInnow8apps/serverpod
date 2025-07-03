@@ -9,18 +9,27 @@ import 'package:serverpod/serverpod.dart';
 import 'package:serverpod_auth_server/serverpod_auth_server.dart';
 
 const _configFilePath = 'config/google_client_secret.json';
+const _passwordKey = 'serverpod_auth_googleClientSecret';
 
 /// Convenience methods for handling authentication with Google and accessing
 /// Google's APIs.
 class GoogleAuth {
-  /// The client secret loaded from `config/google_client_secret.json`, null
-  /// if the client secrets failed to load.
+  /// The client secret loaded from `config/google_client_secret.json` or
+  /// password `serverpod_auth_googleClientSecret`, null if the client secrets
+  /// failed to load.
   static final clientSecret = _loadClientSecret();
 
   static GoogleClientSecret? _loadClientSecret() {
     try {
-      var file = File(_configFilePath);
-      var jsonData = file.readAsStringSync();
+      late final String jsonData;
+      final password = Serverpod.instance.getPassword(_passwordKey);
+      if (password != null) {
+        jsonData = password;
+      } else {
+        var file = File(_configFilePath);
+        jsonData = file.readAsStringSync();
+      }
+
       var data = jsonDecode(jsonData);
       if (data is! Map<String, dynamic>) {
         throw const FormatException('Not a JSON (map) object');
@@ -32,29 +41,29 @@ class GoogleAuth {
 
       Map web = data['web'];
 
-      var clientId = web['client_id'];
-      if (clientId == null) {
+      var webClientId = web['client_id'];
+      if (webClientId == null) {
         throw const FormatException('Missing "client_id"');
       }
 
-      var clientSecret = web['client_secret'];
-      if (clientSecret == null) {
+      var webClientSecret = web['client_secret'];
+      if (webClientSecret == null) {
         throw const FormatException('Missing "client_secret"');
       }
 
-      var redirectUris = web['redirect_uris'];
-      if (redirectUris == null) {
+      var webRedirectUris = web['redirect_uris'];
+      if (webRedirectUris == null) {
         throw const FormatException('Missing "redirect_uris"');
       }
 
       return GoogleClientSecret._(
-        clientId: clientId,
-        clientSecret: clientSecret,
-        redirectUris: (redirectUris as List).cast<String>(),
+        clientId: webClientId,
+        clientSecret: webClientSecret,
+        redirectUris: (webRedirectUris as List).cast<String>(),
       );
     } catch (e) {
       stderr.writeln(
-        'serverpod_auth_server: Failed to load $_configFilePath. Sign in with Google will be disabled. Error: $e',
+        'serverpod_auth_server: Failed to load $_configFilePath or password $_passwordKey. Sign in with Google will be disabled. Error: $e',
       );
       return null;
     }
@@ -70,7 +79,7 @@ class GoogleAuth {
   ) async {
     if (clientSecret == null) {
       throw StateError(
-        'Google client secret from $_configFilePath is not loaded',
+        'Google client secret from $_configFilePath or password $_passwordKey is not loaded',
       );
     }
 

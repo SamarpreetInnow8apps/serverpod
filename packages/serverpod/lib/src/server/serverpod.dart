@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:serverpod/protocol.dart';
 import 'package:serverpod/serverpod.dart';
 import 'package:serverpod/src/cloud_storage/public_endpoint.dart';
 import 'package:serverpod/src/config/version.dart';
@@ -16,6 +15,7 @@ import 'package:serverpod/src/server/future_call_manager/future_call_manager.dar
 import 'package:serverpod/src/server/health_check_manager.dart';
 import 'package:serverpod/src/server/log_manager/log_manager.dart';
 import 'package:serverpod/src/server/log_manager/log_settings.dart';
+import 'package:serverpod/src/server/tasks/tasks.dart';
 import 'package:serverpod_shared/serverpod_shared.dart';
 
 import '../authentication/default_authentication_handler.dart';
@@ -57,13 +57,18 @@ class Serverpod {
     return _instance!;
   }
 
-  late String _runMode;
-
   /// The servers run mode as specified in [ServerpodRunMode].
-  String get runMode => _runMode;
+  String get runMode => config.runMode;
+
+  late final CommandLineArgs _commandLineArgs;
 
   /// The parsed runtime arguments passed to Serverpod at startup.
-  late final CommandLineArgs commandLineArgs;
+  @Deprecated(
+    'Use config instead. The commandLineArgs field provides raw command line arguments, '
+    'but the config field offers a more structured and comprehensive configuration system. '
+    'This field will be removed in a future major version.',
+  )
+  CommandLineArgs get commandLineArgs => _commandLineArgs;
 
   /// The server configuration, as read from the config/ directory.
   late ServerpodConfig config;
@@ -113,11 +118,11 @@ class Serverpod {
   /// The main server managed by this [Serverpod].
   late Server server;
 
-  Server? _serviceServer;
+  Server? _insightsServer;
 
   /// The service server managed by this [Serverpod].
   Server get serviceServer {
-    var service = _serviceServer;
+    var service = _insightsServer;
     if (service == null) {
       throw StateError(
         'Insights server is disabled, supply a Insights configuration '
@@ -153,6 +158,9 @@ class Serverpod {
 
   FutureCallManager? _futureCallManager;
 
+  final TaskManagerImpl _requestReceivingShutdownTasks = TaskManagerImpl();
+  final TaskManagerImpl _internalServicesShutdownTasks = TaskManagerImpl();
+
   /// Cloud storages used by the serverpod. By default two storages are set up,
   /// if the database integration is enabled. The storages are named
   /// `public` and `private`. The default storages are using the database,
@@ -168,10 +176,10 @@ class Serverpod {
     storage[cloudStorage.storageId] = cloudStorage;
   }
 
-  internal.RuntimeSettings get _defaultRuntimeSettings {
+  internal.RuntimeSettings _defaultRuntimeSettings(String runMode) {
     return internal.RuntimeSettings(
       logSettings: internal.LogSettings(
-        logAllSessions: false,
+        logAllSessions: runMode == ServerpodRunMode.development,
         logAllQueries: false,
         logSlowSessions: true,
         logSlowQueries: true,
@@ -188,15 +196,63 @@ class Serverpod {
     );
   }
 
-  internal.RuntimeSettings? _runtimeSettings;
+  late internal.RuntimeSettings _runtimeSettings;
 
   /// Serverpod runtime settings as read from the database.
-  internal.RuntimeSettings get runtimeSettings => _runtimeSettings!;
+  internal.RuntimeSettings get runtimeSettings => _runtimeSettings;
 
   void _updateLogSettings(internal.RuntimeSettings settings) {
     _runtimeSettings = settings;
     _logSettingsManager = LogSettingsManager(settings);
     _logManager = LogManager(settings, serverId: serverId);
+  }
+
+  /// Initializes the servers internal shutdown task managers and registers
+  /// shutdown tasks.
+  ///
+  /// This method is called during server startup and sets up the servers
+  /// internal task managers with all the necessary tasks to properly shutdown
+  /// the server.
+  void _initializeShutdownTaskManagers() {
+    _requestReceivingShutdownTasks.addTask(
+      'Server',
+      server.shutdown,
+    );
+
+    _requestReceivingShutdownTasks.addTask(
+      'Web Server',
+      () async => _webServer?.stop(),
+    );
+
+    _requestReceivingShutdownTasks.addTask(
+      'Service Server',
+      () async => _insightsServer?.shutdown(),
+    );
+
+    _requestReceivingShutdownTasks.addTask(
+      'Future Call Manager',
+      () async => _futureCallManager?.stop(),
+    );
+
+    _internalServicesShutdownTasks.addTask(
+      'Test Auditor',
+      () async => _shutdownTestAuditor(),
+    );
+
+    _internalServicesShutdownTasks.addTask(
+      'Internal Session',
+      _internalSession.close,
+    );
+
+    _internalServicesShutdownTasks.addTask(
+      'Redis Controller',
+      () async => redisController?.stop(),
+    );
+
+    _internalServicesShutdownTasks.addTask(
+      'Health Check Manager',
+      () async => _healthCheckManager?.stop(),
+    );
   }
 
   /// Updates the runtime settings and writes the new settings to the database.
@@ -284,6 +340,17 @@ class Serverpod {
   /// Security context if the insights server is running over https.
   final SecurityContextConfig? _securityContextConfig;
 
+  /// Runtime parameters builder to apply to all sessions of the connection pool.
+  ///
+  /// Use the callback function to discover runtime parameters:
+  /// ```dart
+  ///   runtimeParametersBuilder: (params) => [
+  ///     params.hnswIndexQuery(efSearch: 100),
+  ///     params.vectorIndexQuery(enableSeqScan: false),
+  ///   ],
+  /// ```
+  final RuntimeParametersListBuilder? runtimeParametersBuilder;
+
   /// Creates a new Serverpod.
   ///
   /// ## Experimental features
@@ -301,6 +368,7 @@ class Serverpod {
     this.httpOptionsResponseHeaders = _defaultHttpOptionsResponseHeaders,
     SecurityContextConfig? securityContextConfig,
     ExperimentalFeatures? experimentalFeatures,
+    this.runtimeParametersBuilder,
   })  : _securityContextConfig = securityContextConfig,
         _experimental = ExperimentalApi._(
           config: config,
@@ -323,24 +391,28 @@ class Serverpod {
     );
 
     // Read command line arguments.
-    commandLineArgs = CommandLineArgs(args);
-    stdout.writeln(commandLineArgs.toString());
+    _commandLineArgs = CommandLineArgs(args);
 
-    _runMode = commandLineArgs.runMode;
+    final runMode = _calculateRunMode(
+      _commandLineArgs.getRaw<String>(CliArgsConstants.runMode),
+    );
+
     // Load passwords
     _passwordManager = PasswordManager(runMode: runMode);
     _passwords = _passwordManager.loadPasswords();
 
     // Load config
-    this.config = config ??
+    this.config = config?.copyWith(runMode: runMode) ??
         ServerpodConfig.load(
-          _runMode,
-          commandLineArgs.serverId,
+          runMode,
+          _commandLineArgs.getRaw<String>(CliArgsConstants.serverId),
           _passwords,
+          commandLineArgs: _commandLineArgs.toMap(),
         );
 
+    stdout.writeln(_getCommandLineArgsString());
+
     logVerbose(this.config.toString());
-    serverId = this.config.serverId;
 
     try {
       _innerInitializeServerpod();
@@ -349,6 +421,9 @@ class Serverpod {
           message: 'Error in Serverpod initialization');
       rethrow;
     }
+
+    // Initializes shutdown task manager
+    _initializeShutdownTaskManagers();
 
     stdout.writeln('SERVERPOD initialized, time: ${DateTime.now().toUtc()}');
   }
@@ -360,13 +435,14 @@ class Serverpod {
 
     // Create a temporary log manager with default settings, until we have
     // loaded settings from the database.
-    _updateLogSettings(_defaultRuntimeSettings);
+    _updateLogSettings(_defaultRuntimeSettings(runMode));
 
     // Setup database
     var databaseConfiguration = config.database;
     if (Features.enableDatabase && databaseConfiguration != null) {
       _databasePoolManager = DatabasePoolManager(
         serializationManager,
+        runtimeParametersBuilder,
         databaseConfiguration,
       );
 
@@ -393,6 +469,7 @@ class Serverpod {
         port: redis.port,
         user: redis.user,
         password: redis.password,
+        requireSsl: redis.requireSsl,
       );
     }
 
@@ -412,7 +489,7 @@ class Serverpod {
       serializationManager: serializationManager,
       databasePoolManager: _databasePoolManager,
       passwords: _passwords,
-      runMode: _runMode,
+      runMode: runMode,
       caches: caches,
       authenticationHandler: authHandler,
       whitelistedExternalCalls: whitelistedExternalCalls,
@@ -456,6 +533,16 @@ class Serverpod {
         serverpod: this,
         securityContext: _securityContextConfig?.webServer,
       );
+    }
+
+    if (Features.enableInsights) {
+      if (_isValidSecret(config.serviceSecret)) {
+        _insightsServer = _configureInsightsServer();
+      } else {
+        stderr.write(
+          'Invalid serviceSecret in password file, Insights server disabled.',
+        );
+      }
     }
   }
 
@@ -513,8 +600,7 @@ class Serverpod {
     _databasePoolManager?.start();
 
     if (Features.enableMigrations) {
-      int? maxAttempts =
-          commandLineArgs.role == ServerpodRole.maintenance ? 6 : null;
+      int? maxAttempts = config.role == ServerpodRole.maintenance ? 6 : null;
       try {
         await _connectToDatabase(
           session: internalSession,
@@ -527,20 +613,19 @@ class Serverpod {
       }
 
       await _applyMigrations(
-        applyRepairMigration: commandLineArgs.applyRepairMigration,
-        applyMigrations: commandLineArgs.applyMigrations,
+        applyRepairMigration: config.applyRepairMigration,
+        applyMigrations: config.applyMigrations,
       );
 
       await _loadRuntimeSettings();
-    } else if (commandLineArgs.applyMigrations ||
-        commandLineArgs.applyRepairMigration) {
+    } else if (config.applyMigrations || config.applyRepairMigration) {
       stderr.writeln(
         'Migrations are disabled in this project, skipping applying migration(s).',
       );
       _exitCode = 1;
     }
 
-    _updateLogSettings(_runtimeSettings ?? _defaultRuntimeSettings);
+    _updateLogSettings(_runtimeSettings);
 
     // Connect to Redis
     if (Features.enableRedis) {
@@ -551,8 +636,8 @@ class Serverpod {
     }
 
     // Start servers.
-    if (commandLineArgs.role == ServerpodRole.monolith ||
-        commandLineArgs.role == ServerpodRole.serverless) {
+    if (config.role == ServerpodRole.monolith ||
+        config.role == ServerpodRole.serverless) {
       var serversStarted = true;
 
       ProcessSignal.sigint.watch().listen(_onInterruptSignal);
@@ -562,13 +647,7 @@ class Serverpod {
 
       // Serverpod Insights.
       if (Features.enableInsights) {
-        if (_isValidSecret(config.serviceSecret)) {
-          serversStarted &= await _startInsightsServer();
-        } else {
-          stderr.write(
-            'Invalid serviceSecret in password file, Insights server disabled.',
-          );
-        }
+        serversStarted &= await _insightsServer?.start() ?? true;
       }
 
       // Main API server.
@@ -595,11 +674,10 @@ class Serverpod {
     // Start maintenance tasks. If we are running in maintenance mode, we
     // will only run the maintenance tasks once. If we are applying migrations
     // no other maintenance tasks will be run.
-    var appliedMigrations = (commandLineArgs.applyMigrations |
-        commandLineArgs.applyRepairMigration);
-    if (commandLineArgs.role == ServerpodRole.monolith ||
-        (commandLineArgs.role == ServerpodRole.maintenance &&
-            !appliedMigrations)) {
+    var appliedMigrations =
+        (config.applyMigrations | config.applyRepairMigration);
+    if (config.role == ServerpodRole.monolith ||
+        (config.role == ServerpodRole.maintenance && !appliedMigrations)) {
       logVerbose('Starting maintenance tasks.');
 
       // Start future calls
@@ -607,7 +685,7 @@ class Serverpod {
       if (!config.futureCallExecutionEnabled) {
         logVerbose('Future call execution is disabled.');
         _completedFutureCalls = true;
-      } else if (commandLineArgs.role == ServerpodRole.maintenance) {
+      } else if (config.role == ServerpodRole.maintenance) {
         unawaited(
           _futureCallManager
               ?.runScheduledFutureCalls()
@@ -624,8 +702,7 @@ class Serverpod {
 
     logVerbose('Serverpod start complete.');
 
-    if (commandLineArgs.role == ServerpodRole.maintenance &&
-        appliedMigrations) {
+    if (config.role == ServerpodRole.maintenance && appliedMigrations) {
       logVerbose('Finished applying database migrations.');
       throw ExitException(_exitCode);
     }
@@ -678,8 +755,10 @@ class Serverpod {
 
   Future<void> _loadRuntimeSettings() async {
     logVerbose('Loading runtime settings.');
+
+    internal.RuntimeSettings? runtimeSettings;
     try {
-      _runtimeSettings =
+      runtimeSettings =
           await internal.RuntimeSettings.db.findFirstRow(internalSession);
     } catch (e, stackTrace) {
       _exitCode = 1;
@@ -687,19 +766,44 @@ class Serverpod {
       _reportException(e, stackTrace, message: message);
     }
 
-    if (_runtimeSettings == null) {
+    if (runtimeSettings == null) {
       logVerbose('Runtime settings not found, creating default settings.');
       try {
-        _runtimeSettings = await RuntimeSettings.db
-            .insertRow(internalSession, _defaultRuntimeSettings);
+        runtimeSettings = await internal.RuntimeSettings.db
+            .insertRow(internalSession, _runtimeSettings);
+        _runtimeSettings = runtimeSettings;
       } catch (e, stackTrace) {
         _exitCode = 1;
         const message = 'Failed to store runtime settings.';
         _reportException(e, stackTrace, message: message);
       }
     } else {
+      _runtimeSettings = runtimeSettings;
       logVerbose('Runtime settings loaded.');
     }
+  }
+
+  String _calculateRunMode(String? runModeFromCommandLine) {
+    if (runModeFromCommandLine != null) {
+      return runModeFromCommandLine;
+    }
+
+    final runModeFromEnv =
+        Platform.environment[ServerpodEnv.runMode.envVariable];
+    if (runModeFromEnv != null) {
+      return switch (runModeFromEnv) {
+        ServerpodRunMode.development ||
+        ServerpodRunMode.test ||
+        ServerpodRunMode.staging ||
+        ServerpodRunMode.production =>
+          runModeFromEnv,
+        _ => throw ArgumentError(
+            'Invalid run mode from environment (${ServerpodEnv.runMode.envVariable}): $runModeFromEnv',
+          ),
+      };
+    }
+
+    return ServerpodRunMode.development;
   }
 
   bool _completedHealthChecks = false;
@@ -747,17 +851,17 @@ class Serverpod {
     shutdown(exitProcess: true, signalNumber: signal.signalNumber);
   }
 
-  Future<bool> _startInsightsServer() async {
+  Server _configureInsightsServer() {
     var endpoints = internal.Endpoints();
 
-    _serviceServer = Server(
+    var insightsServer = Server(
       serverpod: this,
       serverId: serverId,
       port: config.insightsServer!.port,
       serializationManager: _internalSerializationManager,
       databasePoolManager: _databasePoolManager,
       passwords: _passwords,
-      runMode: _runMode,
+      runMode: runMode,
       name: 'Insights',
       caches: caches,
       authenticationHandler: serviceAuthenticationHandler,
@@ -766,11 +870,9 @@ class Serverpod {
       httpOptionsResponseHeaders: httpOptionsResponseHeaders,
       securityContext: _securityContextConfig?.insightsServer,
     );
-    endpoints.initializeEndpoints(_serviceServer!);
+    endpoints.initializeEndpoints(insightsServer);
 
-    var success = await _serviceServer!.start();
-
-    return success;
+    return insightsServer;
   }
 
   /// Registers a [FutureCall] with the [Serverpod] and associates it with
@@ -877,7 +979,8 @@ class Serverpod {
   }
 
   /// Shuts down the Serverpod and all associated servers.
-  /// If [exitProcess] is set to false, the process will not exit at the end of the shutdown.
+  /// If [exitProcess] is set to false, the process will not exit at the end of
+  /// the shutdown.
   Future<void> shutdown({
     bool exitProcess = true,
     int? signalNumber,
@@ -885,41 +988,36 @@ class Serverpod {
     stdout.writeln(
         'SERVERPOD initiating shutdown, time: ${DateTime.now().toUtc()}');
 
-    var futures = [
-      _shutdownTestAuditor(),
-      _internalSession.close(),
-      redisController?.stop(),
-      server.shutdown(),
-      _webServer?.stop(),
-      _serviceServer?.shutdown(),
-      _futureCallManager?.stop(),
-      _healthCheckManager?.stop(),
-    ].nonNulls;
-
     Object? shutdownError;
-    await futures.wait.onError((ParallelWaitError e, stackTrace) {
-      shutdownError = e;
-      var errors = e.errors;
-      if (errors is Iterable<AsyncError?>) {
-        for (var error in errors.nonNulls) {
-          _reportException(
-            error.error,
-            error.stackTrace,
-            message: 'Error in server shutdown',
-          );
-        }
-      } else {
-        _reportException(
-          errors,
-          stackTrace,
-          message: 'Error in serverpod shutdown',
-        );
-      }
-      return e.values;
-    });
 
+    await _requestReceivingShutdownTasks.executeTasks(
+      onTaskError: (error, stack, id) {
+        shutdownError = error;
+        _reportException(
+          error,
+          stack,
+          message: 'Error in request receiving shutdown "$id"',
+        );
+      },
+    );
+
+    await experimental._shutdownTasks.executeTasks(
+      onTaskError: (error, stack, id) {
+        shutdownError = error;
+        _reportException(error, stack, message: 'Error in shutdown task "$id"');
+      },
+    );
+
+    await _internalServicesShutdownTasks.executeTasks(
+      onTaskError: (error, stack, id) {
+        shutdownError = error;
+        _reportException(error, stack,
+            message: 'Error in service shutdown "$id"');
+      },
+    );
+
+    // This needs to be closed last as it is used by the other services.
     try {
-      // This needs to be closed last as it is used by the other services.
       await _databasePoolManager?.stop();
     } catch (e, stackTrace) {
       shutdownError = e;
@@ -939,14 +1037,14 @@ class Serverpod {
     }
 
     if (shutdownError != null) {
-      throw shutdownError as Object;
+      throw shutdownError!;
     }
   }
 
   /// Logs a message to the console if the logging command line argument is set
   /// to verbose.
   void logVerbose(String message) {
-    if (commandLineArgs.loggingMode == ServerpodLoggingMode.verbose) {
+    if (config.loggingMode == ServerpodLoggingMode.verbose) {
       stdout.writeln(message);
     }
   }
@@ -988,8 +1086,29 @@ class Serverpod {
         await session.db.testConnection();
         return session;
       } catch (e, stackTrace) {
-        const message = 'Failed to connect to the database.';
-        _reportException(e, stackTrace, message: message);
+        if ((e is DatabaseQueryException) &&
+            e.code == PgErrorCode.invalidPassword) {
+          const passwordAuthFailedMessage =
+              'Failed to connect to the database. Password authentication failed.\n'
+              'If you are running PostgreSQL through the provided docker-compose.yaml, make sure that the password '
+              'in your passwords.yaml and the password used in the setup of the database match (check the '
+              'docker-compose.yaml).\n\n'
+              'If you are currently starting a new project and previously had a project with the same name, '
+              'the passwords will not match (each project has a randomly generated password), so you need to '
+              'delete the storage of the old project.\n\n'
+              'If you are using the included docker compose file, you can run `docker compose down -v` to '
+              'remove any volumes and start over. This will remove all data in the database. So be careful '
+              'if you are using this.';
+
+          _reportException(
+            e,
+            stackTrace,
+            message: passwordAuthFailedMessage,
+          );
+        } else {
+          const message = 'Failed to connect to the database.';
+          _reportException(e, stackTrace, message: message);
+        }
 
         stderr.writeln('Retrying to connect to the database in 10 seconds.');
         if (!printedDatabaseConnectionError) {
@@ -1011,6 +1130,24 @@ class Serverpod {
 
   bool _isValidSecret(String? secret) {
     return secret != null && secret.isNotEmpty && secret.length > 20;
+  }
+
+  String _getCommandLineArgsString() {
+    final ServerpodConfig(
+      :runMode,
+      :serverId,
+      :role,
+      :loggingMode,
+      :applyMigrations,
+      :applyRepairMigration,
+    ) = config;
+
+    return 'runMode: $runMode\n'
+        'serverId: $serverId\n'
+        'role: ${role.name}\n'
+        'loggingMode: ${loggingMode.name}\n'
+        'applyMigrations: $applyMigrations\n'
+        'applyRepairMigration: $applyRepairMigration';
   }
 }
 
@@ -1049,13 +1186,26 @@ Future<void>? _shutdownTestAuditor() {
 class ExperimentalApi {
   final DiagnosticEventHandler _eventDispatcher;
 
+  final TaskManagerImpl _shutdownTasks;
+
+  /// Shutdown tasks can be used to perform cleanup operations before the server
+  /// is shut down. The tasks will be executed asynchronously after the server
+  /// has received the shutdown signal.
+  ///
+  /// You can use this to add custom tasks using [shutdownTasks.addTask].
+  ///
+  /// Before the shutdown tasks are executed, the server will close the api
+  /// server, web server, insights server, and future call manager.
+  TaskManager get shutdownTasks => _shutdownTasks;
+
   ExperimentalApi._({
     ServerpodConfig? config,
     ExperimentalFeatures? experimentalFeatures,
-  }) : _eventDispatcher = DiagnosticEventDispatcher(
+  })  : _eventDispatcher = DiagnosticEventDispatcher(
           experimentalFeatures?.diagnosticEventHandlers ?? const [],
           timeout: config?.experimentalDiagnosticHandlerTimeout,
-        );
+        ),
+        _shutdownTasks = TaskManagerImpl();
 
   /// Application method for submitting a diagnostic event
   /// to registered event handlers.

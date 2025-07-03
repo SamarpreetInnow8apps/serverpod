@@ -1,3 +1,6 @@
+import 'dart:core' as d;
+import 'dart:core';
+
 import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:code_builder/code_builder.dart' as code_builder;
@@ -12,6 +15,7 @@ import 'package:serverpod_cli/src/util/string_manipulation.dart';
 import 'package:serverpod_serialization/serverpod_serialization.dart';
 import 'package:serverpod_service_client/serverpod_service_client.dart';
 import 'package:serverpod_shared/serverpod_shared.dart';
+import 'package:super_string/super_string.dart';
 
 import '../config/config.dart';
 
@@ -49,6 +53,10 @@ class TypeDefinition {
 
   /// True if this type references a custom class.
   final bool customClass;
+
+  /// Stores the dimension of Vector type (e.g., 1536 for Vector(1536)).
+  /// Only populated for Vector types.
+  final d.int? vectorDimension;
 
   EnumDefinition? enumDefinition;
 
@@ -111,6 +119,7 @@ class TypeDefinition {
     this.enumDefinition,
     this.projectModelDefinition,
     this.recordFieldName,
+    this.vectorDimension,
   });
 
   static const recordTypeClassName = '_Record';
@@ -125,6 +134,11 @@ class TypeDefinition {
   bool get isSetType => className == SetKeyword.className;
 
   bool get isMapType => className == MapKeyword.className;
+
+  static List<String> get vectorClassNames =>
+      ['Vector', 'HalfVector', 'SparseVector', 'Bit'];
+
+  bool get isVectorType => vectorClassNames.contains(className);
 
   bool get isRecordType => className == recordTypeClassName;
 
@@ -164,6 +178,7 @@ class TypeDefinition {
     List<TypeDefinition> generics = const [],
     required bool nullable,
     bool customClass = false,
+    d.int? vectorDimension,
   }) {
     var parts = mixed.split(':');
     var classname = parts.last;
@@ -177,6 +192,7 @@ class TypeDefinition {
       generics: generics,
       url: url.isNotEmpty ? url : null,
       customClass: customClass,
+      vectorDimension: vectorDimension,
     );
   }
 
@@ -200,6 +216,7 @@ class TypeDefinition {
         enumDefinition: enumDefinition,
         projectModelDefinition: projectModelDefinition,
         recordFieldName: recordFieldName,
+        vectorDimension: vectorDimension,
       );
 
   /// Get this [TypeDefinition], but non nullable.
@@ -213,6 +230,7 @@ class TypeDefinition {
         enumDefinition: enumDefinition,
         projectModelDefinition: projectModelDefinition,
         recordFieldName: recordFieldName,
+        vectorDimension: vectorDimension,
       );
 
   /// Returns this [TypeDefinition] as a named record field
@@ -226,6 +244,7 @@ class TypeDefinition {
         enumDefinition: enumDefinition,
         projectModelDefinition: projectModelDefinition,
         recordFieldName: recordFieldName,
+        vectorDimension: vectorDimension,
       );
 
   static String getRef(SerializableModelDefinition model) {
@@ -251,17 +270,20 @@ class TypeDefinition {
   }) {
     if (isRecordType) {
       return code_builder.RecordType((b) {
-        b.positionalFieldTypes.addAll(
-          generics
-              .where((f) => f.recordFieldName == null)
-              .map((f) => f.reference(serverCode, config: config)),
-        );
+        b.positionalFieldTypes.addAll([
+          for (final f in positionalRecordFields)
+            f.reference(
+              serverCode,
+              subDirParts: subDirParts,
+              config: config,
+            ),
+        ]);
 
         b.namedFieldTypes.addAll({
-          for (var namedField
-              in generics.where((f) => f.recordFieldName != null))
+          for (final namedField in namedRecordFields)
             namedField.recordFieldName!: namedField.reference(
               serverCode,
+              subDirParts: subDirParts,
               config: config,
             ),
         });
@@ -291,7 +313,8 @@ class TypeDefinition {
               serverCode ? module.serverPackage : module.dartClientPackage;
           t.url = 'package:$packageName/$packageName.dart';
         } else if (url == 'serverpod' ||
-            (url == null && ['UuidValue'].contains(className))) {
+            (url == null &&
+                (['UuidValue', ...vectorClassNames]).contains(className))) {
           // serverpod: reference
           t.url = serverpodUrl(serverCode);
         } else if (url?.startsWith('project:') ?? false) {
@@ -370,6 +393,10 @@ class TypeDefinition {
     if (className == 'UuidValue') return 'uuid';
     if (className == 'Uri') return 'text';
     if (className == 'BigInt') return 'text';
+    if (className == 'Vector') return 'vector';
+    if (className == 'HalfVector') return 'halfvec';
+    if (className == 'SparseVector') return 'sparsevec';
+    if (className == 'Bit') return 'bit';
 
     return 'json';
   }
@@ -393,6 +420,10 @@ class TypeDefinition {
     if (className == 'UuidValue') return 'ColumnUuid';
     if (className == 'Uri') return 'ColumnUri';
     if (className == 'BigInt') return 'ColumnBigInt';
+    if (className == 'Vector') return 'ColumnVector';
+    if (className == 'HalfVector') return 'ColumnHalfVector';
+    if (className == 'SparseVector') return 'ColumnSparseVector';
+    if (className == 'Bit') return 'ColumnBit';
 
     return 'ColumnSerializable';
   }
@@ -414,11 +445,6 @@ class TypeDefinition {
     required GeneratorConfig config,
   }) {
     if (isRecordType) {
-      var positionalFields =
-          generics.where((f) => f.recordFieldName == null).toList();
-      var namedFields =
-          generics.where((f) => f.recordFieldName != null).toList();
-
       return [
         MapEntry(
           refer('getType', serverpodUrl(serverCode))
@@ -427,7 +453,8 @@ class TypeDefinition {
             [
               if (nullable) const Code(' (data == null) ? null as T : '),
               const Code('('),
-              for (final (i, positionalField) in positionalFields.indexed) ...[
+              for (final (i, positionalField)
+                  in positionalRecordFields.indexed) ...[
                 if (positionalField.nullable)
                   Code(
                       "((data ${i == 0 ? 'as Map' : ''})['p'] as List)[$i] == null ? null : "),
@@ -443,20 +470,20 @@ class TypeDefinition {
                 const Code(')'),
                 const Code(','),
               ],
-              if (namedFields.isNotEmpty) ...[
-                for (final (i, namedField) in namedFields.indexed) ...[
+              if (namedRecordFields.isNotEmpty) ...[
+                for (final (i, namedField) in namedRecordFields.indexed) ...[
                   Code(namedField.recordFieldName!),
                   const Code(':'),
                   if (namedField.nullable)
                     Code(
-                        "((data ${i == 0 && positionalFields.isEmpty ? 'as Map' : ''})['n'] as Map)['${namedField.recordFieldName!}'] == null ? null : "),
+                        "((data ${i == 0 && positionalRecordFields.isEmpty ? 'as Map' : ''})['n'] as Map)['${namedField.recordFieldName!}'] == null ? null : "),
                   const Code('deserialize<'),
                   namedField
                       .reference(serverCode, config: config, nullable: false)
                       .code,
                   const Code('>('),
                   if (i == 0 &&
-                      positionalFields.isEmpty &&
+                      positionalRecordFields.isEmpty &&
                       !namedField.nullable)
                     Code(
                         "((data as Map)['n'] as Map)['${namedField.recordFieldName!}']")
@@ -615,6 +642,7 @@ class TypeDefinition {
       enumDefinition: enumDefinition,
       url: isProjectModel ? defaultModuleAlias : url,
       recordFieldName: recordFieldName,
+      vectorDimension: vectorDimension,
     );
   }
 
@@ -630,6 +658,10 @@ class TypeDefinition {
     if (className == 'ByteData') return ValueType.byteData;
     if (className == 'UuidValue') return ValueType.uuidValue;
     if (className == 'BigInt') return ValueType.bigInt;
+    if (className == 'Vector') return ValueType.vector;
+    if (className == 'HalfVector') return ValueType.halfVector;
+    if (className == 'SparseVector') return ValueType.sparseVector;
+    if (className == 'Bit') return ValueType.bit;
     if (className == 'List') return ValueType.list;
     if (className == 'Set') return ValueType.set;
     if (className == 'Map') return ValueType.map;
@@ -669,18 +701,15 @@ class TypeDefinition {
   @override
   String toString() {
     if (isRecordType) {
-      var positionalFields =
-          generics.where((f) => f.recordFieldName == null).toList();
-      var namedFields =
-          generics.where((f) => f.recordFieldName != null).toList();
-
       return [
         '(',
-        positionalFields.map((t) => t.toString()).join(', '),
-        if (positionalFields.isNotEmpty || positionalFields.length == 1) ',',
-        if (namedFields.isNotEmpty) ...[
+        positionalRecordFields.map((t) => t.toString()).join(', '),
+        if (positionalRecordFields.isNotEmpty ||
+            positionalRecordFields.length == 1)
+          ',',
+        if (namedRecordFields.isNotEmpty) ...[
           ' {',
-          namedFields.map((f) => '$f ${f.recordFieldName!}').join(', '),
+          namedRecordFields.map((f) => '$f ${f.recordFieldName!}').join(', '),
           '}',
         ],
         ')',
@@ -691,7 +720,8 @@ class TypeDefinition {
     var genericsString = generics.isNotEmpty ? '<${generics.join(',')}>' : '';
     var nullableString = nullable ? '?' : '';
     var urlString = url != null ? '$url:' : '';
-    return '$urlString$className$genericsString$nullableString';
+    var classRepr = isVectorType ? '$className($vectorDimension)' : className;
+    return '$urlString$classRepr$genericsString$nullableString';
   }
 }
 
@@ -795,6 +825,12 @@ TypeDefinition parseType(
 
   String className = trimmedInput.substring(0, terminatedAt).trim();
 
+  var vectorDimension = (TypeDefinition.vectorClassNames.contains(className) &&
+          (trimmedInput.count('(') == 1 && trimmedInput.count(')') == 1))
+      ? int.tryParse(
+          trimmedInput.substring(terminatedAt + 1, trimmedInput.indexOf(')')))
+      : null;
+
   var extraClass = extraClasses
       ?.cast<TypeDefinition?>()
       .firstWhere((c) => c?.className == className, orElse: () => null);
@@ -808,11 +844,14 @@ TypeDefinition parseType(
     nullable: isNullable,
     generics: generics,
     customClass: extraClasses == null,
+    vectorDimension: vectorDimension,
   );
 }
 
 int _findLastClassToken(int start, String input, bool isNullable) {
   if (start != -1) return start;
+  if (input.first != '(' && input.contains('(')) return input.indexOf('(');
+  if (input.first != '(' && input.contains(')')) return input.indexOf(')');
   if (isNullable) return input.length - 1;
 
   return input.length;
@@ -845,6 +884,10 @@ enum ValueType {
   record,
   isEnum,
   classType,
+  vector,
+  halfVector,
+  sparseVector,
+  bit,
   uri;
 }
 
@@ -1025,5 +1068,17 @@ extension _RecordTypeDefinitionParsing on TypeDefinition {
     }
 
     return namedFields;
+  }
+}
+
+extension on TypeDefinition {
+  Iterable<TypeDefinition> get positionalRecordFields {
+    assert(isRecordType);
+    return generics.where((f) => f.recordFieldName == null).toList();
+  }
+
+  Iterable<TypeDefinition> get namedRecordFields {
+    assert(isRecordType);
+    return generics.where((f) => f.recordFieldName != null).toList();
   }
 }

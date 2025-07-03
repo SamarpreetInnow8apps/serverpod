@@ -67,9 +67,10 @@ void main() {
               r'  _i\d\.TestClosure<TestEndpoints> testClosure, \{\n'
               r'  bool\? applyMigrations,\n'
               r'  bool\? enableSessionLogging,\n'
-              r'  _i2.ExperimentalFeatures\? experimentalFeatures,\n'
+              r'  _i\d\.ExperimentalFeatures\? experimentalFeatures,\n'
               r'  _i\d\.RollbackDatabase\? rollbackDatabase,\n'
               r'  String\? runMode,\n'
+              r'  _i\d\.RuntimeParametersListBuilder\? runtimeParametersBuilder,\n'
               r'  _i\d\.ServerpodLoggingMode\? serverpodLoggingMode,\n'
               r'  Duration\? serverpodStartTimeout,\n'
               r'  List<String>\? testGroupTagsOverride,\n'
@@ -327,9 +328,10 @@ void main() {
               r'  _i\d\.TestClosure<TestEndpoints> testClosure, \{\n'
               r'  bool\? applyMigrations,\n'
               r'  bool\? enableSessionLogging,\n'
-              r'  _i2.ExperimentalFeatures\? experimentalFeatures,\n'
+              r'  _i\d\.ExperimentalFeatures\? experimentalFeatures,\n'
               r'  _i\d\.RollbackDatabase\? rollbackDatabase,\n'
               r'  String\? runMode,\n'
+              r'  _i\d\.RuntimeParametersListBuilder\? runtimeParametersBuilder,\n'
               r'  _i\d\.ServerpodLoggingMode\? serverpodLoggingMode,\n'
               r'  Duration\? serverpodStartTimeout,\n'
               r'  List<String>\? testGroupTagsOverride,\n'
@@ -467,9 +469,10 @@ void main() {
               r'  _i\d\.TestClosure<TestEndpoints> testClosure, \{\n'
               r'  bool\? applyMigrations,\n'
               r'  bool\? enableSessionLogging,\n'
-              r'  _i2.ExperimentalFeatures\? experimentalFeatures,\n'
+              r'  _i\d\.ExperimentalFeatures\? experimentalFeatures,\n'
               r'  _i\d\.RollbackDatabase\? rollbackDatabase,\n'
               r'  String\? runMode,\n'
+              r'  _i\d\.RuntimeParametersListBuilder\? runtimeParametersBuilder,\n'
               r'  _i\d\.ServerpodLoggingMode\? serverpodLoggingMode,\n'
               r'  Duration\? serverpodStartTimeout,\n'
               r'  List<String>\? testGroupTagsOverride,\n'
@@ -738,7 +741,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(testToolsFile,
             contains('callAwaitableFunctionAndHandleExceptions('));
@@ -804,7 +807,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(testToolsFile,
             contains('callAwaitableFunctionAndHandleExceptions('));
@@ -869,7 +872,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(testToolsFile,
             contains('callAwaitableFunctionAndHandleExceptions('));
@@ -934,7 +937,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(
             testToolsFile,
@@ -1001,7 +1004,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(
             testToolsFile,
@@ -1072,7 +1075,7 @@ void main() {
     );
 
     test(
-      'then the the method body contains a call to the correct exception handler function.',
+      'then the method body contains a call to the correct exception handler function.',
       () {
         expect(
             testToolsFile, contains('callStreamFunctionAndHandleExceptions('));

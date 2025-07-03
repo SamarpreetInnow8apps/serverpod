@@ -139,6 +139,15 @@ Expression _buildFromJson(
     case ValueType.byteData:
     case ValueType.uuidValue:
     case ValueType.uri:
+    case ValueType.vector:
+    case ValueType.halfVector:
+    case ValueType.sparseVector:
+    case ValueType.bit:
+      return _buildComplexTypeFromJson(
+        type,
+        valueExpression,
+        serverCode,
+      );
     case ValueType.bigInt:
       return _buildComplexTypeFromJson(
         type,
@@ -461,7 +470,9 @@ Expression _buildRecordTypeFromJson(
         .call(
           [valueExpression.asA(refer('Map<String, dynamic>'))],
           {},
-          [type.reference(serverCode, config: config)],
+          [
+            type.reference(serverCode, config: config, subDirParts: subDirParts)
+          ],
         )
         .code,
   ]));

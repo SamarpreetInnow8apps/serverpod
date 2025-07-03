@@ -1,0 +1,16 @@
+emailAccount:
+  - login:
+  - startRegistration:
+  - finishRegistration:
+  - startPasswordReset:
+  - finishPasswordReset:
+sessionTest:
+  - createTestUser:
+  - createSession:
+  - checkSession:
+userProfile:
+  - get:
+  - removeUserImage:
+  - setUserImage:
+  - changeUserName:
+  - changeFullName:

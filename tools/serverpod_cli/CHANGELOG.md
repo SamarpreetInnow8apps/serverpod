@@ -1,3 +1,35 @@
+## 2.9.1
+- feat: Makes it possible to configure a default page for `SignInWithEmailDialog`.
+- feat: Adds lints to project template.
+- feat: Warns users about using outdated lock file.
+- fix: Updates UUID generator reference to use `serverpod` package instead of `uuid`.
+- fix: Clears cache in between test runs.
+- fix: Removes database write from read/write test.
+- fix: Fixes code generation for type definitions from other folders.
+- fix: Fixes `getClassNameForObject` method in subclasses.
+
+## 2.9.0
+- feat: Adds support for `HalfVector`, `SparseVector` and `Bit` vector types in models and endpoints. ([@marcelomendoncasoares](https://github.com/marcelomendoncasoares))
+- feat: Adds support for changing model `id` type to `UUID`. ([@marcelomendoncasoares](https://github.com/marcelomendoncasoares))  
+- feat: Adds support for setting runtime parameters on the database connection. ([@marcelomendoncasoares](https://github.com/marcelomendoncasoares))  
+- feat: Adds support for supplying CLI arguments from environment variables when starting the server.
+- feat: Adds support for loading custom passwords from environment variables.
+- feat: Adds support for loading Google and Firebase secrets from environment variables in the auth module.  
+- feat(EXPERIMENTAL): Adds support for registering shutdown tasks that are executed when the server is shutting down. ([yashas-hm](https://github.com/yashas-hm))
+- fix: Fixes an issue where unblocking a user would not invalidate the user cache. ([@LesYampolskyi](https://github.com/LesYampolskyi))
+- fix: Fixes an issue where paths starting with `v` would be stripped when serving static files in the web server.
+- fix: Fixes an issue where the endpoint description would not be generated when creating new projects.
+- fix: Fixes an issue where server configuration would not be loaded correctly if API configuration was missing.
+- fix: Reduce memory footprint of the client when uploading files with `FileUploader`.
+- fix: Improves duration formatting in human-readable log output.
+
+## 2.8.0
+- feat: Adds `DatabaseUtils` with support for executing code blocks in transactions or savepoints.
+- feat: Adds support for `Vector` type, with database `HNSW` and `IVFFLAT` indexing, in models and endpoints. ([@marcelomendoncasoares](https://github.com/marcelomendoncasoares))
+- feat: Adds support for SSL connections with Redis. ([@remonh87](https://github.com/remonh87))
+- fix: Fixes an issue where configured `user` would not be used when connecting to Redis. ([@remonh87](https://github.com/remonh87))
+- fix: Improves error message when failing to connect to database during startup.
+
 ## 2.7.0
 - feat: Adds support for storing `String`-representable user id in `AuthenticationInfo`.
 - feat: Adds support for `UUIDv7` as a default value in models.

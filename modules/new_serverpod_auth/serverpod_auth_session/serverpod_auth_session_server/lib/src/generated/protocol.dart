@@ -14,7 +14,11 @@ import 'package:serverpod/protocol.dart' as _i2;
 import 'package:serverpod_auth_user_server/serverpod_auth_user_server.dart'
     as _i3;
 import 'auth_session.dart' as _i4;
+import 'auth_session_info.dart' as _i5;
+import 'auth_success.dart' as _i6;
 export 'auth_session.dart';
+export 'auth_session_info.dart';
+export 'auth_success.dart';
 
 class Protocol extends _i1.SerializationManagerServer {
   Protocol._();
@@ -44,6 +48,12 @@ class Protocol extends _i1.SerializationManagerServer {
           dartType: 'UuidValue',
         ),
         _i2.ColumnDefinition(
+          name: 'scopeNames',
+          columnType: _i2.ColumnType.json,
+          isNullable: false,
+          dartType: 'Set<String>',
+        ),
+        _i2.ColumnDefinition(
           name: 'created',
           columnType: _i2.ColumnType.timestampWithoutTimeZone,
           isNullable: false,
@@ -51,16 +61,35 @@ class Protocol extends _i1.SerializationManagerServer {
           columnDefault: 'CURRENT_TIMESTAMP',
         ),
         _i2.ColumnDefinition(
-          name: 'scopeNames',
-          columnType: _i2.ColumnType.json,
+          name: 'lastUsed',
+          columnType: _i2.ColumnType.timestampWithoutTimeZone,
           isNullable: false,
-          dartType: 'Set<String>',
+          dartType: 'DateTime',
+          columnDefault: 'CURRENT_TIMESTAMP',
+        ),
+        _i2.ColumnDefinition(
+          name: 'expiresAt',
+          columnType: _i2.ColumnType.timestampWithoutTimeZone,
+          isNullable: true,
+          dartType: 'DateTime?',
+        ),
+        _i2.ColumnDefinition(
+          name: 'expireAfterUnusedFor',
+          columnType: _i2.ColumnType.bigint,
+          isNullable: true,
+          dartType: 'Duration?',
         ),
         _i2.ColumnDefinition(
           name: 'sessionKeyHash',
-          columnType: _i2.ColumnType.text,
+          columnType: _i2.ColumnType.bytea,
           isNullable: false,
-          dartType: 'String',
+          dartType: 'dart:typed_data:ByteData',
+        ),
+        _i2.ColumnDefinition(
+          name: 'sessionKeySalt',
+          columnType: _i2.ColumnType.bytea,
+          isNullable: false,
+          dartType: 'dart:typed_data:ByteData',
         ),
         _i2.ColumnDefinition(
           name: 'method',
@@ -110,8 +139,20 @@ class Protocol extends _i1.SerializationManagerServer {
     if (t == _i4.AuthSession) {
       return _i4.AuthSession.fromJson(data) as T;
     }
+    if (t == _i5.AuthSessionInfo) {
+      return _i5.AuthSessionInfo.fromJson(data) as T;
+    }
+    if (t == _i6.AuthSuccess) {
+      return _i6.AuthSuccess.fromJson(data) as T;
+    }
     if (t == _i1.getType<_i4.AuthSession?>()) {
       return (data != null ? _i4.AuthSession.fromJson(data) : null) as T;
+    }
+    if (t == _i1.getType<_i5.AuthSessionInfo?>()) {
+      return (data != null ? _i5.AuthSessionInfo.fromJson(data) : null) as T;
+    }
+    if (t == _i1.getType<_i6.AuthSuccess?>()) {
+      return (data != null ? _i6.AuthSuccess.fromJson(data) : null) as T;
     }
     if (t == Set<String>) {
       return (data as List).map((e) => deserialize<String>(e)).toSet() as T;
@@ -129,8 +170,13 @@ class Protocol extends _i1.SerializationManagerServer {
   String? getClassNameForObject(Object? data) {
     String? className = super.getClassNameForObject(data);
     if (className != null) return className;
-    if (data is _i4.AuthSession) {
-      return 'AuthSession';
+    switch (data) {
+      case _i4.AuthSession():
+        return 'AuthSession';
+      case _i5.AuthSessionInfo():
+        return 'AuthSessionInfo';
+      case _i6.AuthSuccess():
+        return 'AuthSuccess';
     }
     className = _i2.Protocol().getClassNameForObject(data);
     if (className != null) {
@@ -151,6 +197,12 @@ class Protocol extends _i1.SerializationManagerServer {
     }
     if (dataClassName == 'AuthSession') {
       return deserialize<_i4.AuthSession>(data['data']);
+    }
+    if (dataClassName == 'AuthSessionInfo') {
+      return deserialize<_i5.AuthSessionInfo>(data['data']);
+    }
+    if (dataClassName == 'AuthSuccess') {
+      return deserialize<_i6.AuthSuccess>(data['data']);
     }
     if (dataClassName.startsWith('serverpod.')) {
       data['className'] = dataClassName.substring(10);
